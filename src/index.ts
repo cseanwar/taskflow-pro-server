@@ -11,6 +11,7 @@ import taskRoutes from './routes/task.routes';
 import sprintRoutes from './routes/sprint.routes';
 import analyticsRoutes from './routes/analytics.routes';
 import notificationRoutes from './routes/notification.routes';
+import searchRoutes from './routes/search.routes';
 
 dotenv.config();
 
@@ -41,6 +42,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/sprints', sprintRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/search', searchRoutes);
 
 // Global Error Handler
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {

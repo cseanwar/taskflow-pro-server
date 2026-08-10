@@ -201,18 +201,21 @@ router.get('/project/:id', auth_middleware_1.verifyToken, async (req, res) => {
             acc[t.columnId] = (acc[t.columnId] || 0) + 1;
             return acc;
         }, {});
-        // Velocity: committed vs completed per sprint
+        // Velocity: committed vs completed per sprint (counts + story points)
         const velocity = sprints.map(s => {
             const sprintTasks = tasks.filter(t => t.sprintId?.toString() === s._id?.toString());
+            const completed = sprintTasks.filter(t => t.columnId === 'done');
             return {
                 sprintId: s._id?.toString(),
                 name: s.name,
                 status: s.status,
                 committed: sprintTasks.length,
-                completed: sprintTasks.filter(t => t.columnId === 'done').length,
+                completed: completed.length,
+                committedPoints: sprintTasks.reduce((sum, t) => sum + (t.estimate || 0), 0),
+                completedPoints: completed.reduce((sum, t) => sum + (t.estimate || 0), 0),
             };
         });
-        // Team workload: per assignee counts
+        // Team workload: per assignee counts + column heatmap + capacity %
         const userMap = new Map();
         const assigneeIds = new Set();
         tasks.forEach(t => (t.assigneeIds || []).forEach(aid => assigneeIds.add(aid.toString())));
@@ -220,28 +223,86 @@ router.get('/project/:id', auth_middleware_1.verifyToken, async (req, res) => {
             .find({ _id: { $in: Array.from(assigneeIds).map(a => new mongodb_1.ObjectId(a)) } }, { projection: { password: 0 } })
             .toArray();
         users.forEach(u => userMap.set(u._id?.toString(), u));
+        const CAPACITY = 10; // open tasks considered "full" allocation
         const workloadMap = new Map();
         tasks.forEach(t => {
             (t.assigneeIds || []).forEach(aid => {
                 const id = aid.toString();
-                const entry = workloadMap.get(id) || { totalTasks: 0, completedTasks: 0, openTasks: 0 };
+                const entry = workloadMap.get(id) || { totalTasks: 0, completedTasks: 0, openTasks: 0, byColumn: {} };
                 entry.totalTasks += 1;
                 if (t.columnId === 'done')
                     entry.completedTasks += 1;
-                else
+                else {
                     entry.openTasks += 1;
+                    entry.byColumn[t.columnId] = (entry.byColumn[t.columnId] || 0) + 1;
+                }
                 workloadMap.set(id, entry);
             });
         });
         const teamWorkload = Array.from(workloadMap.entries())
-            .map(([userId, counts]) => ({
-            userId,
-            name: userMap.get(userId)?.name || 'Unknown User',
-            avatar: userMap.get(userId)?.avatar || '',
-            ...counts,
-            progress: counts.totalTasks > 0 ? Math.round((counts.completedTasks / counts.totalTasks) * 100) : 0,
-        }))
+            .map(([userId, counts]) => {
+            const workloadPercent = Math.min(100, Math.round((counts.openTasks / CAPACITY) * 100));
+            return {
+                userId,
+                name: userMap.get(userId)?.name || 'Unknown User',
+                avatar: userMap.get(userId)?.avatar || '',
+                ...counts,
+                progress: counts.totalTasks > 0 ? Math.round((counts.completedTasks / counts.totalTasks) * 100) : 0,
+                capacity: CAPACITY,
+                workloadPercent,
+                allocation: workloadPercent > 100 ? 'over' : workloadPercent >= 80 ? 'high' : workloadPercent <= 20 ? 'under' : 'ok',
+            };
+        })
             .sort((a, b) => b.openTasks - a.openTasks);
+        // Team productivity: features vs bugs completed per member
+        const isBug = (t) => (t.labels || []).some(l => /bug/i.test(l));
+        const productivityMap = new Map();
+        tasks.forEach(t => {
+            const bug = isBug(t);
+            (t.assigneeIds || []).forEach(aid => {
+                const id = aid.toString();
+                const entry = productivityMap.get(id) || { completedFeatures: 0, completedBugs: 0, openFeatures: 0, openBugs: 0 };
+                if (t.columnId === 'done') {
+                    if (bug)
+                        entry.completedBugs += 1;
+                    else
+                        entry.completedFeatures += 1;
+                }
+                else {
+                    if (bug)
+                        entry.openBugs += 1;
+                    else
+                        entry.openFeatures += 1;
+                }
+                productivityMap.set(id, entry);
+            });
+        });
+        const teamProductivity = Array.from(productivityMap.entries())
+            .map(([userId, counts]) => {
+            const totalCompleted = counts.completedFeatures + counts.completedBugs;
+            const totalOpen = counts.openFeatures + counts.openBugs;
+            return {
+                userId,
+                name: userMap.get(userId)?.name || 'Unknown User',
+                avatar: userMap.get(userId)?.avatar || '',
+                ...counts,
+                totalCompleted,
+                totalOpen,
+                completionRate: totalCompleted + totalOpen > 0 ? Math.round((totalCompleted / (totalCompleted + totalOpen)) * 100) : 0,
+            };
+        })
+            .sort((a, b) => b.totalCompleted - a.totalCompleted);
+        // Cycle time: average days from creation to completion
+        const doneTasks = tasks.filter(t => t.columnId === 'done' && t.completedAt);
+        const cycleTimeDays = doneTasks.length > 0
+            ? Math.round((doneTasks.reduce((sum, t) => {
+                const start = new Date(t.createdAt).getTime();
+                const end = new Date(t.completedAt).getTime();
+                return sum + (end > start ? (end - start) / 86400000 : 0);
+            }, 0) /
+                doneTasks.length) *
+                10) / 10
+            : 0;
         // Active sprint + time remaining
         const activeSprint = sprints.find(s => s.status === 'Active') || null;
         let timeRemainingDays = null;
@@ -284,6 +345,8 @@ router.get('/project/:id', auth_middleware_1.verifyToken, async (req, res) => {
                 statusStats,
                 velocity,
                 teamWorkload,
+                teamProductivity,
+                cycleTimeDays,
                 activeSprint: activeSprint
                     ? { id: activeSprint._id?.toString(), name: activeSprint.name, startDate: activeSprint.startDate, endDate: activeSprint.endDate }
                     : null,
@@ -296,6 +359,42 @@ router.get('/project/:id', auth_middleware_1.verifyToken, async (req, res) => {
     catch (error) {
         console.error('Project overview analytics error:', error);
         res.status(500).json({ success: false, message: 'Failed to fetch project overview.' });
+    }
+});
+// List the user's active projects (for the reports selector)
+router.get('/projects', auth_middleware_1.verifyToken, async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId)
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        const db = await (0, db_1.connectDB)();
+        const workspacesCollection = db.collection('workspaces');
+        const projectsCollection = db.collection('projects');
+        const userWorkspaces = await workspacesCollection
+            .find({ $or: [{ ownerId: new mongodb_1.ObjectId(userId) }, { 'members.userId': new mongodb_1.ObjectId(userId) }] })
+            .toArray();
+        const workspaceIds = userWorkspaces.map(w => w._id);
+        const wsMap = new Map(userWorkspaces.map(w => [w._id?.toString(), w.name]));
+        const projects = await projectsCollection
+            .find({ workspaceId: { $in: workspaceIds }, status: 'active' })
+            .sort({ updatedAt: -1 })
+            .toArray();
+        res.status(200).json({
+            success: true,
+            projects: projects.map(p => ({
+                _id: p._id?.toString(),
+                name: p.name,
+                code: p.code,
+                category: p.category || '',
+                status: p.status,
+                workspaceId: p.workspaceId.toString(),
+                workspaceName: wsMap.get(p.workspaceId.toString()) || '',
+            })),
+        });
+    }
+    catch (error) {
+        console.error('Report projects error:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch projects.' });
     }
 });
 // Get Dashboard Overview Statistics

@@ -73,7 +73,7 @@ router.get('/project/:projectId', auth_middleware_1.verifyToken, async (req, res
 // Create Task
 router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
     try {
-        const { projectId, columnId, sprintId, title, description, priority, dueDate, assigneeIds, labels, attachments, checklist } = req.body;
+        const { projectId, columnId, sprintId, title, description, priority, estimate, dueDate, assigneeIds, labels, attachments, checklist } = req.body;
         if (!projectId || !title) {
             return res.status(400).json({ success: false, message: 'Project ID and title are required.' });
         }
@@ -100,6 +100,7 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
             title,
             description: description || '',
             priority: priority || 'Medium',
+            estimate: typeof estimate === 'number' ? estimate : null,
             dueDate: dueDate || null,
             assigneeIds: assigneeIds?.map((id) => new mongodb_1.ObjectId(id)) || [new mongodb_1.ObjectId(userId)],
             reporterId: new mongodb_1.ObjectId(userId),
@@ -144,16 +145,19 @@ router.patch('/:id/move', auth_middleware_1.verifyToken, async (req, res) => {
         const { columnId, order, sprintId } = req.body;
         const db = await (0, db_1.connectDB)();
         const tasksCollection = db.collection('tasks');
+        const current = await tasksCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
         const updateFields = { updatedAt: new Date() };
-        if (columnId !== undefined)
+        if (columnId !== undefined) {
             updateFields.columnId = columnId;
+            updateFields.completedAt = columnId === 'done' ? new Date() : null;
+        }
         if (order !== undefined)
             updateFields.order = order;
         if (sprintId !== undefined)
             updateFields.sprintId = sprintId ? new mongodb_1.ObjectId(sprintId) : null;
         await tasksCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateFields });
         if (columnId !== undefined) {
-            const task = await tasksCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+            const task = current || (await tasksCollection.findOne({ _id: new mongodb_1.ObjectId(id) }));
             await (0, activity_1.logActivity)({
                 projectId: task?.projectId,
                 taskId: id,
@@ -171,7 +175,7 @@ router.patch('/:id/move', auth_middleware_1.verifyToken, async (req, res) => {
 router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
     try {
         const id = req.params.id;
-        const { title, description, priority, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
+        const { title, description, priority, estimate, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
         const db = await (0, db_1.connectDB)();
         const tasksCollection = db.collection('tasks');
         const current = await tasksCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
@@ -185,6 +189,8 @@ router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
             updateFields.description = description;
         if (priority !== undefined)
             updateFields.priority = priority;
+        if (estimate !== undefined)
+            updateFields.estimate = typeof estimate === 'number' ? estimate : null;
         if (dueDate !== undefined)
             updateFields.dueDate = dueDate;
         if (assigneeIds !== undefined)
@@ -195,6 +201,10 @@ router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
             updateFields.checklist = checklist;
         if (attachments !== undefined)
             updateFields.attachments = attachments;
+        if (columnId !== undefined) {
+            updateFields.columnId = columnId;
+            updateFields.completedAt = columnId === 'done' ? new Date() : null;
+        }
         await tasksCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateFields });
         // Log meaningful field changes
         const events = [];
@@ -202,6 +212,9 @@ router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
             events.push(`Updated title to "${title}"`);
         if (priority !== undefined && priority !== current.priority)
             events.push(`Changed priority to ${priority}`);
+        if (estimate !== undefined && estimate !== current.estimate) {
+            events.push(estimate ? `Set estimate to ${estimate} points` : 'Cleared estimate');
+        }
         if (dueDate !== undefined && String(dueDate) !== String(current.dueDate || '')) {
             events.push(dueDate ? `Set due date to ${String(dueDate).slice(0, 10)}` : 'Cleared due date');
         }

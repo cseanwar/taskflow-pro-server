@@ -88,6 +88,7 @@ export interface ITask {
   title: string;
   description?: string;
   priority: TaskPriority;
+  estimate?: number | null; // Story points
   dueDate?: Date | string | null;
   assigneeIds: (ObjectId | string)[];
   reporterId: ObjectId | string;
@@ -95,6 +96,7 @@ export interface ITask {
   attachments?: ITaskAttachment[];
   checklist?: IChecklistItem[];
   order: number;
+  completedAt?: Date | null; // Set when the task moves to "done"
   createdAt: Date;
   updatedAt: Date;
 }

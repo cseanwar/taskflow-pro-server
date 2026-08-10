@@ -15,6 +15,7 @@ const task_routes_1 = __importDefault(require("./routes/task.routes"));
 const sprint_routes_1 = __importDefault(require("./routes/sprint.routes"));
 const analytics_routes_1 = __importDefault(require("./routes/analytics.routes"));
 const notification_routes_1 = __importDefault(require("./routes/notification.routes"));
+const search_routes_1 = __importDefault(require("./routes/search.routes"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 5000;
@@ -38,6 +39,7 @@ app.use('/api/tasks', task_routes_1.default);
 app.use('/api/sprints', sprint_routes_1.default);
 app.use('/api/analytics', analytics_routes_1.default);
 app.use('/api/notifications', notification_routes_1.default);
+app.use('/api/search', search_routes_1.default);
 // Global Error Handler
 app.use((err, req, res, next) => {
     console.error('Unhandled Server Error:', err);

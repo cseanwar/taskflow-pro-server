@@ -80,7 +80,7 @@ router.get('/project/:projectId', verifyToken, async (req: AuthRequest, res: Res
 // Create Task
 router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { projectId, columnId, sprintId, title, description, priority, dueDate, assigneeIds, labels, attachments, checklist } = req.body;
+    const { projectId, columnId, sprintId, title, description, priority, estimate, dueDate, assigneeIds, labels, attachments, checklist } = req.body;
 
     if (!projectId || !title) {
       return res.status(400).json({ success: false, message: 'Project ID and title are required.' });
@@ -113,6 +113,7 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
       title,
       description: description || '',
       priority: priority || 'Medium',
+      estimate: typeof estimate === 'number' ? estimate : null,
       dueDate: dueDate || null,
       assigneeIds: assigneeIds?.map((id: string) => new ObjectId(id)) || [new ObjectId(userId)],
       reporterId: new ObjectId(userId),
@@ -162,8 +163,13 @@ router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) =
     const db = await connectDB();
     const tasksCollection = db.collection<ITask>('tasks');
 
+    const current = await tasksCollection.findOne({ _id: new ObjectId(id) });
+
     const updateFields: any = { updatedAt: new Date() };
-    if (columnId !== undefined) updateFields.columnId = columnId;
+    if (columnId !== undefined) {
+      updateFields.columnId = columnId;
+      updateFields.completedAt = columnId === 'done' ? new Date() : null;
+    }
     if (order !== undefined) updateFields.order = order;
     if (sprintId !== undefined) updateFields.sprintId = sprintId ? new ObjectId(sprintId) : null;
 
@@ -173,7 +179,7 @@ router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) =
     );
 
     if (columnId !== undefined) {
-      const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
+      const task = current || (await tasksCollection.findOne({ _id: new ObjectId(id) }));
       await logActivity({
         projectId: task?.projectId,
         taskId: id,
@@ -192,7 +198,7 @@ router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) =
 router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
-    const { title, description, priority, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
+    const { title, description, priority, estimate, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
 
     const db = await connectDB();
     const tasksCollection = db.collection<ITask>('tasks');
@@ -206,11 +212,16 @@ router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
     if (title !== undefined) updateFields.title = title;
     if (description !== undefined) updateFields.description = description;
     if (priority !== undefined) updateFields.priority = priority;
+    if (estimate !== undefined) updateFields.estimate = typeof estimate === 'number' ? estimate : null;
     if (dueDate !== undefined) updateFields.dueDate = dueDate;
     if (assigneeIds !== undefined) updateFields.assigneeIds = assigneeIds.map((aid: string) => new ObjectId(aid));
     if (labels !== undefined) updateFields.labels = labels;
     if (checklist !== undefined) updateFields.checklist = checklist;
     if (attachments !== undefined) updateFields.attachments = attachments;
+    if (columnId !== undefined) {
+      updateFields.columnId = columnId;
+      updateFields.completedAt = columnId === 'done' ? new Date() : null;
+    }
 
     await tasksCollection.updateOne(
       { _id: new ObjectId(id) },
@@ -221,6 +232,9 @@ router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
     const events: string[] = [];
     if (title !== undefined && title !== current.title) events.push(`Updated title to "${title}"`);
     if (priority !== undefined && priority !== current.priority) events.push(`Changed priority to ${priority}`);
+    if (estimate !== undefined && estimate !== current.estimate) {
+      events.push(estimate ? `Set estimate to ${estimate} points` : 'Cleared estimate');
+    }
     if (dueDate !== undefined && String(dueDate) !== String(current.dueDate || '')) {
       events.push(dueDate ? `Set due date to ${String(dueDate).slice(0, 10)}` : 'Cleared due date');
     }

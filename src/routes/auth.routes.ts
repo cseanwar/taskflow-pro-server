@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
@@ -11,7 +12,7 @@ const router = Router();
 // Register / Sign up
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, avatar } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, message: 'Name, email, and password are required.' });
     }
@@ -25,12 +26,17 @@ router.post('/register', async (req: Request, res: Response) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const avatarUrl =
+      typeof avatar === 'string' && /^https?:\/\//i.test(avatar) && avatar.length <= 2048
+        ? avatar
+        : `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}`;
     const newUser: IUser = {
       name,
       email: email.toLowerCase(),
       password: hashedPassword,
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}`,
+      avatar: avatarUrl,
       role: role || 'Team Member',
+      provider: 'local',
       isVerified: true,
       status: 'active',
       createdAt: new Date(),
@@ -107,6 +113,97 @@ router.post('/login', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ success: false, message: 'Failed to login.' });
+  }
+});
+
+// Google OAuth Sign-in / Sign-up
+router.post('/google', async (req: Request, res: Response) => {
+  try {
+    const { credential } = req.body;
+    if (!credential) {
+      return res.status(400).json({ success: false, message: 'Google credential is required.' });
+    }
+
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      return res.status(500).json({ success: false, message: 'Google sign-in is not configured.' });
+    }
+
+    const client = new OAuth2Client(clientId);
+    const ticket = await client.verifyIdToken({ idToken: credential, audience: clientId });
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(400).json({ success: false, message: 'Invalid Google credential.' });
+    }
+
+    const db = await connectDB();
+    const usersCollection = db.collection<IUser>('users');
+
+    const email = payload.email.toLowerCase();
+    const googleId = payload.sub;
+    let accountCreated = false;
+
+    let user = await usersCollection.findOne({ email });
+
+    if (!user) {
+      const newUser: IUser = {
+        name: payload.name || email.split('@')[0] || 'Google User',
+        email,
+        avatar: payload.picture,
+        role: 'Team Member',
+        provider: 'google',
+        googleId,
+        isVerified: payload.email_verified ?? true,
+        status: 'active',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      const result = await usersCollection.insertOne(newUser as any);
+      user = await usersCollection.findOne({ _id: result.insertedId });
+      accountCreated = true;
+      if (!user) {
+        return res.status(500).json({ success: false, message: 'Failed to create account.' });
+      }
+    } else if (user.googleId !== googleId) {
+      await usersCollection.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            googleId,
+            provider: 'google',
+            avatar: user.avatar || payload.picture,
+            updatedAt: new Date(),
+          },
+        }
+      );
+      user.googleId = googleId;
+      user.provider = 'google';
+    }
+
+    if (user.status === 'suspended') {
+      return res.status(403).json({ success: false, message: 'Your account has been suspended.' });
+    }
+
+    const userId = user._id?.toString();
+    const secret = process.env.JWT_SECRET || 'miPrhyQM7eb6vqpcyr6xbqbPxj7eEhPg';
+    const token = jwt.sign({ id: userId, email: user.email, role: user.role }, secret, { expiresIn: '7d' });
+
+    res.status(200).json({
+      success: true,
+      message: accountCreated ? 'Account created successfully' : 'Signed in with Google',
+      token,
+      user: {
+        id: userId,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        avatar: user.avatar,
+        status: user.status,
+      },
+    });
+  } catch (error) {
+    console.error('Google auth error:', error);
+    res.status(500).json({ success: false, message: 'Failed to authenticate with Google.' });
   }
 });
 

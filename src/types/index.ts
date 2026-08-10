@@ -11,6 +11,8 @@ export interface IUser {
   password?: string;
   avatar?: string;
   role: UserRole;
+  provider?: 'local' | 'google';
+  googleId?: string;
   isVerified?: boolean;
   status: 'active' | 'suspended';
   createdAt: Date;
@@ -80,6 +82,7 @@ export interface ITaskAttachment {
 export interface ITask {
   _id?: ObjectId | string;
   projectId: ObjectId | string;
+  key?: string; // Sequential per-project key, e.g. "TF-1"
   columnId: string;
   sprintId?: ObjectId | string | null;
   title: string;

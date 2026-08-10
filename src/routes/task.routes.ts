@@ -2,9 +2,30 @@ import { Router, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
-import { ITask, IComment, IActivityLog, IUser } from '../types';
+import { ITask, IComment, IActivityLog, IProject, IUser } from '../types';
+import { logActivity, COLUMN_TITLES } from '../lib/activity';
 
 const router = Router();
+
+// Compute the next sequential task key for a project, e.g. "TF-1", "TF-2"...
+async function nextTaskKey(tasksCollection: any, projectsCollection: any, projectId: string): Promise<string> {
+  const project = await projectsCollection.findOne({ _id: new ObjectId(projectId) });
+  const prefix = (project?.code || 'TSK').toUpperCase();
+
+  const existing = await tasksCollection
+    .find({ projectId: new ObjectId(projectId), key: { $exists: true, $ne: null } })
+    .project({ key: 1 })
+    .toArray();
+
+  let maxNumber = 0;
+  existing.forEach((t: any) => {
+    if (!t.key) return;
+    const match = String(t.key).match(/(\d+)$/);
+    if (match) maxNumber = Math.max(maxNumber, parseInt(match[1], 10));
+  });
+
+  return `${prefix}-${maxNumber + 1}`;
+}
 
 // Get Tasks by Project (Supports filter by Sprint, Assignee, Priority, Status/Column)
 router.get('/project/:projectId', verifyToken, async (req: AuthRequest, res: Response) => {
@@ -70,7 +91,7 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
 
     const db = await connectDB();
     const tasksCollection = db.collection<ITask>('tasks');
-    const logsCollection = db.collection<IActivityLog>('activity_logs');
+    const projectsCollection = db.collection<IProject>('projects');
 
     // Calculate next order in column
     const highestTask = await tasksCollection
@@ -80,9 +101,13 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
       .toArray();
 
     const nextOrder = highestTask.length > 0 ? highestTask[0].order + 1 : 0;
+    const key = await nextTaskKey(tasksCollection, projectsCollection, projectId);
+
+    const project = await projectsCollection.findOne({ _id: new ObjectId(projectId) });
 
     const newTask: ITask = {
       projectId: new ObjectId(projectId),
+      key,
       columnId: columnId || 'todo',
       sprintId: sprintId ? new ObjectId(sprintId) : null,
       title,
@@ -103,14 +128,13 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
     const taskId = result.insertedId;
 
     // Log Activity
-    await logsCollection.insertOne({
-      workspaceId: new ObjectId(), // default fallback or fetch
-      projectId: new ObjectId(projectId),
+    await logActivity({
+      workspaceId: project?.workspaceId,
+      projectId,
       taskId: taskId,
-      actorId: new ObjectId(userId),
+      actorId: userId,
       action: `Created task "${title}"`,
-      createdAt: new Date(),
-    } as any);
+    });
 
     res.status(201).json({
       success: true,
@@ -148,6 +172,16 @@ router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) =
       { $set: updateFields }
     );
 
+    if (columnId !== undefined) {
+      const task = await tasksCollection.findOne({ _id: new ObjectId(id) });
+      await logActivity({
+        projectId: task?.projectId,
+        taskId: id,
+        actorId: req.user?.id,
+        action: `Moved task "${task?.title || id}" to ${COLUMN_TITLES[columnId] || columnId}`,
+      });
+    }
+
     res.status(200).json({ success: true, message: 'Task position updated.' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to move task.' });
@@ -158,10 +192,15 @@ router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) =
 router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
-    const { title, description, priority, dueDate, assigneeIds, labels, checklist, attachments } = req.body;
+    const { title, description, priority, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
 
     const db = await connectDB();
     const tasksCollection = db.collection<ITask>('tasks');
+
+    const current = await tasksCollection.findOne({ _id: new ObjectId(id) });
+    if (!current) {
+      return res.status(404).json({ success: false, message: 'Task not found.' });
+    }
 
     const updateFields: any = { updatedAt: new Date() };
     if (title !== undefined) updateFields.title = title;
@@ -177,6 +216,43 @@ router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
       { _id: new ObjectId(id) },
       { $set: updateFields }
     );
+
+    // Log meaningful field changes
+    const events: string[] = [];
+    if (title !== undefined && title !== current.title) events.push(`Updated title to "${title}"`);
+    if (priority !== undefined && priority !== current.priority) events.push(`Changed priority to ${priority}`);
+    if (dueDate !== undefined && String(dueDate) !== String(current.dueDate || '')) {
+      events.push(dueDate ? `Set due date to ${String(dueDate).slice(0, 10)}` : 'Cleared due date');
+    }
+    if (columnId !== undefined && columnId !== current.columnId) {
+      events.push(`Moved task to ${COLUMN_TITLES[columnId] || columnId}`);
+    }
+    if (labels !== undefined) {
+      const added = labels.filter((l: string) => !current.labels?.includes(l));
+      const removed = current.labels?.filter((l: string) => !labels.includes(l)) || [];
+      added.forEach((l: string) => events.push(`Added label "${l}"`));
+      removed.forEach((l: string) => events.push(`Removed label "${l}"`));
+    }
+    if (checklist !== undefined) {
+      const oldItems = new Map((current.checklist || []).map(c => [c.id, c]));
+      checklist.forEach((item: any) => {
+        const old = oldItems.get(item.id);
+        if (old && old.completed !== item.completed) {
+          events.push(item.completed ? `Completed checklist item "${item.text}"` : `Reopened checklist item "${item.text}"`);
+        }
+      });
+    }
+    if (assigneeIds !== undefined) events.push('Updated assignees');
+
+    if (events.length > 0) {
+      await logActivity({
+        projectId: current.projectId,
+        taskId: id,
+        actorId: req.user?.id,
+        action: `Updated task "${current.title}"`,
+        details: events.join(' • '),
+      });
+    }
 
     res.status(200).json({ success: true, message: 'Task updated successfully.' });
   } catch (error) {
@@ -198,6 +274,39 @@ router.delete('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
     res.status(200).json({ success: true, message: 'Task deleted successfully.' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete task.' });
+  }
+});
+
+// Get Task Activity Log
+router.get('/:id/activity', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const db = await connectDB();
+    const logsCollection = db.collection<IActivityLog>('activity_logs');
+    const usersCollection = db.collection<IUser>('users');
+
+    const logs = await logsCollection
+      .find({ taskId: new ObjectId(id) })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .toArray();
+
+    const actorIds = logs.map(l => new ObjectId(l.actorId.toString()));
+    const actors = await usersCollection
+      .find({ _id: { $in: actorIds } }, { projection: { password: 0 } })
+      .toArray();
+    const actorMap = new Map(actors.map(a => [a._id?.toString(), { name: a.name, avatar: a.avatar }]));
+
+    const formattedLogs = logs.map(l => ({
+      ...l,
+      _id: l._id?.toString(),
+      actorId: l.actorId.toString(),
+      actor: actorMap.get(l.actorId.toString()) || { name: 'Unknown User', avatar: '' },
+    }));
+
+    res.status(200).json({ success: true, activity: formattedLogs });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch task activity.' });
   }
 });
 
@@ -261,6 +370,14 @@ router.post('/:id/comments', verifyToken, async (req: AuthRequest, res: Response
 
     const result = await commentsCollection.insertOne(newComment as any);
     const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+
+    const task = await db.collection<ITask>('tasks').findOne({ _id: new ObjectId(id) });
+    await logActivity({
+      projectId: task?.projectId,
+      taskId: id,
+      actorId: userId,
+      action: `Commented on "${task?.title || 'task'}"`,
+    });
 
     res.status(201).json({
       success: true,

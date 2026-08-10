@@ -4,7 +4,26 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const activity_1 = require("../lib/activity");
 const router = (0, express_1.Router)();
+// Compute the next sequential task key for a project, e.g. "TF-1", "TF-2"...
+async function nextTaskKey(tasksCollection, projectsCollection, projectId) {
+    const project = await projectsCollection.findOne({ _id: new mongodb_1.ObjectId(projectId) });
+    const prefix = (project?.code || 'TSK').toUpperCase();
+    const existing = await tasksCollection
+        .find({ projectId: new mongodb_1.ObjectId(projectId), key: { $exists: true, $ne: null } })
+        .project({ key: 1 })
+        .toArray();
+    let maxNumber = 0;
+    existing.forEach((t) => {
+        if (!t.key)
+            return;
+        const match = String(t.key).match(/(\d+)$/);
+        if (match)
+            maxNumber = Math.max(maxNumber, parseInt(match[1], 10));
+    });
+    return `${prefix}-${maxNumber + 1}`;
+}
 // Get Tasks by Project (Supports filter by Sprint, Assignee, Priority, Status/Column)
 router.get('/project/:projectId', auth_middleware_1.verifyToken, async (req, res) => {
     try {
@@ -63,7 +82,7 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         const db = await (0, db_1.connectDB)();
         const tasksCollection = db.collection('tasks');
-        const logsCollection = db.collection('activity_logs');
+        const projectsCollection = db.collection('projects');
         // Calculate next order in column
         const highestTask = await tasksCollection
             .find({ projectId: new mongodb_1.ObjectId(projectId), columnId: columnId || 'todo' })
@@ -71,8 +90,11 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
             .limit(1)
             .toArray();
         const nextOrder = highestTask.length > 0 ? highestTask[0].order + 1 : 0;
+        const key = await nextTaskKey(tasksCollection, projectsCollection, projectId);
+        const project = await projectsCollection.findOne({ _id: new mongodb_1.ObjectId(projectId) });
         const newTask = {
             projectId: new mongodb_1.ObjectId(projectId),
+            key,
             columnId: columnId || 'todo',
             sprintId: sprintId ? new mongodb_1.ObjectId(sprintId) : null,
             title,
@@ -91,13 +113,12 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
         const result = await tasksCollection.insertOne(newTask);
         const taskId = result.insertedId;
         // Log Activity
-        await logsCollection.insertOne({
-            workspaceId: new mongodb_1.ObjectId(), // default fallback or fetch
-            projectId: new mongodb_1.ObjectId(projectId),
+        await (0, activity_1.logActivity)({
+            workspaceId: project?.workspaceId,
+            projectId,
             taskId: taskId,
-            actorId: new mongodb_1.ObjectId(userId),
+            actorId: userId,
             action: `Created task "${title}"`,
-            createdAt: new Date(),
         });
         res.status(201).json({
             success: true,
@@ -131,6 +152,15 @@ router.patch('/:id/move', auth_middleware_1.verifyToken, async (req, res) => {
         if (sprintId !== undefined)
             updateFields.sprintId = sprintId ? new mongodb_1.ObjectId(sprintId) : null;
         await tasksCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateFields });
+        if (columnId !== undefined) {
+            const task = await tasksCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+            await (0, activity_1.logActivity)({
+                projectId: task?.projectId,
+                taskId: id,
+                actorId: req.user?.id,
+                action: `Moved task "${task?.title || id}" to ${activity_1.COLUMN_TITLES[columnId] || columnId}`,
+            });
+        }
         res.status(200).json({ success: true, message: 'Task position updated.' });
     }
     catch (error) {
@@ -141,9 +171,13 @@ router.patch('/:id/move', auth_middleware_1.verifyToken, async (req, res) => {
 router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
     try {
         const id = req.params.id;
-        const { title, description, priority, dueDate, assigneeIds, labels, checklist, attachments } = req.body;
+        const { title, description, priority, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
         const db = await (0, db_1.connectDB)();
         const tasksCollection = db.collection('tasks');
+        const current = await tasksCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+        if (!current) {
+            return res.status(404).json({ success: false, message: 'Task not found.' });
+        }
         const updateFields = { updatedAt: new Date() };
         if (title !== undefined)
             updateFields.title = title;
@@ -162,6 +196,44 @@ router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         if (attachments !== undefined)
             updateFields.attachments = attachments;
         await tasksCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateFields });
+        // Log meaningful field changes
+        const events = [];
+        if (title !== undefined && title !== current.title)
+            events.push(`Updated title to "${title}"`);
+        if (priority !== undefined && priority !== current.priority)
+            events.push(`Changed priority to ${priority}`);
+        if (dueDate !== undefined && String(dueDate) !== String(current.dueDate || '')) {
+            events.push(dueDate ? `Set due date to ${String(dueDate).slice(0, 10)}` : 'Cleared due date');
+        }
+        if (columnId !== undefined && columnId !== current.columnId) {
+            events.push(`Moved task to ${activity_1.COLUMN_TITLES[columnId] || columnId}`);
+        }
+        if (labels !== undefined) {
+            const added = labels.filter((l) => !current.labels?.includes(l));
+            const removed = current.labels?.filter((l) => !labels.includes(l)) || [];
+            added.forEach((l) => events.push(`Added label "${l}"`));
+            removed.forEach((l) => events.push(`Removed label "${l}"`));
+        }
+        if (checklist !== undefined) {
+            const oldItems = new Map((current.checklist || []).map(c => [c.id, c]));
+            checklist.forEach((item) => {
+                const old = oldItems.get(item.id);
+                if (old && old.completed !== item.completed) {
+                    events.push(item.completed ? `Completed checklist item "${item.text}"` : `Reopened checklist item "${item.text}"`);
+                }
+            });
+        }
+        if (assigneeIds !== undefined)
+            events.push('Updated assignees');
+        if (events.length > 0) {
+            await (0, activity_1.logActivity)({
+                projectId: current.projectId,
+                taskId: id,
+                actorId: req.user?.id,
+                action: `Updated task "${current.title}"`,
+                details: events.join(' • '),
+            });
+        }
         res.status(200).json({ success: true, message: 'Task updated successfully.' });
     }
     catch (error) {
@@ -181,6 +253,35 @@ router.delete('/:id', auth_middleware_1.verifyToken, async (req, res) => {
     }
     catch (error) {
         res.status(500).json({ success: false, message: 'Failed to delete task.' });
+    }
+});
+// Get Task Activity Log
+router.get('/:id/activity', auth_middleware_1.verifyToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const db = await (0, db_1.connectDB)();
+        const logsCollection = db.collection('activity_logs');
+        const usersCollection = db.collection('users');
+        const logs = await logsCollection
+            .find({ taskId: new mongodb_1.ObjectId(id) })
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .toArray();
+        const actorIds = logs.map(l => new mongodb_1.ObjectId(l.actorId.toString()));
+        const actors = await usersCollection
+            .find({ _id: { $in: actorIds } }, { projection: { password: 0 } })
+            .toArray();
+        const actorMap = new Map(actors.map(a => [a._id?.toString(), { name: a.name, avatar: a.avatar }]));
+        const formattedLogs = logs.map(l => ({
+            ...l,
+            _id: l._id?.toString(),
+            actorId: l.actorId.toString(),
+            actor: actorMap.get(l.actorId.toString()) || { name: 'Unknown User', avatar: '' },
+        }));
+        res.status(200).json({ success: true, activity: formattedLogs });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to fetch task activity.' });
     }
 });
 // Get Task Comments
@@ -234,6 +335,13 @@ router.post('/:id/comments', auth_middleware_1.verifyToken, async (req, res) => 
         };
         const result = await commentsCollection.insertOne(newComment);
         const user = await usersCollection.findOne({ _id: new mongodb_1.ObjectId(userId) });
+        const task = await db.collection('tasks').findOne({ _id: new mongodb_1.ObjectId(id) });
+        await (0, activity_1.logActivity)({
+            projectId: task?.projectId,
+            taskId: id,
+            actorId: userId,
+            action: `Commented on "${task?.title || 'task'}"`,
+        });
         res.status(201).json({
             success: true,
             comment: {

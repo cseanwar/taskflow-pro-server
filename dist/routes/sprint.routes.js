@@ -4,6 +4,7 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const activity_1 = require("../lib/activity");
 const router = (0, express_1.Router)();
 // Create Sprint
 router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
@@ -70,6 +71,14 @@ router.patch('/:id/status', auth_middleware_1.verifyToken, async (req, res) => {
         const db = await (0, db_1.connectDB)();
         const sprintsCollection = db.collection('sprints');
         await sprintsCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status, updatedAt: new Date() } });
+        const sprint = await sprintsCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+        if (sprint && req.user?.id) {
+            await (0, activity_1.logActivity)({
+                projectId: sprint.projectId,
+                actorId: req.user?.id,
+                action: `${status === 'Active' ? 'Started' : status === 'Completed' ? 'Completed' : 'Returned to planned'} sprint "${sprint.name}"`,
+            });
+        }
         res.status(200).json({ success: true, message: `Sprint marked as ${status}` });
     }
     catch (error) {

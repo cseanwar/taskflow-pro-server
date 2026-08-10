@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { ISprint, ITask } from '../types';
+import { logActivity } from '../lib/activity';
 
 const router = Router();
 
@@ -84,6 +85,15 @@ router.patch('/:id/status', verifyToken, async (req: AuthRequest, res: Response)
       { _id: new ObjectId(id) },
       { $set: { status, updatedAt: new Date() } }
     );
+
+    const sprint = await sprintsCollection.findOne({ _id: new ObjectId(id) });
+    if (sprint && req.user?.id) {
+      await logActivity({
+        projectId: sprint.projectId,
+        actorId: req.user?.id,
+        action: `${status === 'Active' ? 'Started' : status === 'Completed' ? 'Completed' : 'Returned to planned'} sprint "${sprint.name}"`,
+      });
+    }
 
     res.status(200).json({ success: true, message: `Sprint marked as ${status}` });
   } catch (error) {

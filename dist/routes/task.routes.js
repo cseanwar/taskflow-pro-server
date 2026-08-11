@@ -6,6 +6,7 @@ const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
 const authz_middleware_1 = require("../middleware/authz.middleware");
 const activity_1 = require("../lib/activity");
+const notify_1 = require("../lib/notify");
 const router = (0, express_1.Router)();
 // Compute the next sequential task key for a project, e.g. "TF-1", "TF-2"...
 async function nextTaskKey(tasksCollection, projectsCollection, projectId) {
@@ -122,6 +123,15 @@ router.post('/', auth_middleware_1.verifyToken, (0, authz_middleware_1.requirePr
             actorId: userId,
             action: `Created task "${title}"`,
         });
+        // Notify assignees a new task landed on their board (skip self-assignment).
+        const assigneeStrs = newTask.assigneeIds.map(id => id.toString());
+        await (0, notify_1.notifyUsers)(assigneeStrs.filter(id => id !== userId), {
+            type: 'assignment',
+            title: 'New Task Assigned',
+            message: `You were assigned to "${title}" (${key})`,
+            actorId: userId,
+            link: (0, notify_1.taskNotificationLink)(projectId, taskId),
+        });
         res.status(201).json({
             success: true,
             task: {
@@ -172,8 +182,8 @@ router.patch('/:id/move', auth_middleware_1.verifyToken, (0, authz_middleware_1.
         res.status(500).json({ success: false, message: 'Failed to move task.' });
     }
 });
-// Update Task Details (Project Manager / Workspace Owner / Administrator)
-router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(3), async (req, res) => {
+// Update Task Details (Team Member and above — status, checklist, attachments, deadlines)
+router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(2), async (req, res) => {
     try {
         const id = req.params.id;
         const { title, description, priority, estimate, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
@@ -205,6 +215,21 @@ router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.require
         if (columnId !== undefined) {
             updateFields.columnId = columnId;
             updateFields.completedAt = columnId === 'done' ? new Date() : null;
+        }
+        // Notify newly assigned users about the change.
+        if (assigneeIds !== undefined && Array.isArray(assigneeIds)) {
+            const oldIds = new Set((current.assigneeIds || []).map(id => id.toString()));
+            const newStr = assigneeIds.map((aid) => aid?.toString());
+            const added = newStr.filter(id => id && !oldIds.has(id));
+            if (added.length > 0) {
+                await (0, notify_1.notifyUsers)(added, {
+                    type: 'assignment',
+                    title: 'New Task Assigned',
+                    message: `You were assigned to "${current.title}" (${current.key || 'task'})`,
+                    actorId: req.user?.id,
+                    link: (0, notify_1.taskNotificationLink)(current.projectId, id),
+                });
+            }
         }
         await tasksCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateFields });
         // Log meaningful field changes
@@ -356,6 +381,25 @@ router.post('/:id/comments', auth_middleware_1.verifyToken, (0, authz_middleware
             actorId: userId,
             action: `Commented on "${task?.title || 'task'}"`,
         });
+        // Notify the task's watchers unless they wrote the comment themselves.
+        const watcherIds = new Set();
+        if (task) {
+            if (task.reporterId)
+                watcherIds.add(task.reporterId.toString());
+            (task.assigneeIds || []).forEach(aid => watcherIds.add(aid.toString()));
+        }
+        if (userId)
+            watcherIds.delete(userId);
+        const authorName = user?.name || 'A team member';
+        if (task) {
+            await (0, notify_1.notifyUsers)(Array.from(watcherIds), {
+                type: 'comment',
+                title: `Comment on "${task?.title || 'task'}"`,
+                message: `"${text}" — ${authorName}`,
+                actorId: userId,
+                link: (0, notify_1.taskNotificationLink)(task.projectId, id),
+            });
+        }
         res.status(201).json({
             success: true,
             comment: {

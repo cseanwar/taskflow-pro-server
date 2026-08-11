@@ -4,6 +4,12 @@ export type UserRole = 'Administrator' | 'Workspace Owner' | 'Project Manager' |
 export type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 export type SprintStatus = 'Planned' | 'Active' | 'Completed';
 
+export interface INotificationPrefs {
+  taskAssigned: { email: boolean; push: boolean };
+  comments: { email: boolean; push: boolean };
+  projectUpdates: { email: boolean; push: boolean };
+}
+
 export interface IUser {
   _id?: ObjectId | string;
   name: string;
@@ -15,6 +21,9 @@ export interface IUser {
   googleId?: string;
   isVerified?: boolean;
   status: 'active' | 'suspended';
+  jobTitle?: string;
+  department?: string;
+  notificationPrefs?: INotificationPrefs;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +46,11 @@ export interface IWorkspace {
   updatedAt: Date;
 }
 
+export interface IProjectMemberRole {
+  userId: ObjectId | string;
+  role: UserRole;
+}
+
 export interface IProject {
   _id?: ObjectId | string;
   workspaceId: ObjectId | string;
@@ -47,6 +61,8 @@ export interface IProject {
   status: 'active' | 'archived';
   managerId: ObjectId | string;
   members: (ObjectId | string)[];
+  memberRoles?: IProjectMemberRole[];
+  features?: Record<string, boolean>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -130,6 +146,8 @@ export interface INotification {
   title: string;
   message: string;
   read: boolean;
+  archived?: boolean;
+  actorId?: ObjectId | string;
   link?: string;
   createdAt: Date;
 }

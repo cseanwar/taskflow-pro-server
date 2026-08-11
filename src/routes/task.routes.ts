@@ -5,6 +5,7 @@ import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { requireProjectAccess, requireTaskAccess } from '../middleware/authz.middleware';
 import { ITask, IComment, IActivityLog, IProject, IUser } from '../types';
 import { logActivity, COLUMN_TITLES } from '../lib/activity';
+import { notifyUsers, taskNotificationLink } from '../lib/notify';
 
 const router = Router();
 
@@ -146,6 +147,16 @@ router.post(
       action: `Created task "${title}"`,
     });
 
+    // Notify assignees a new task landed on their board (skip self-assignment).
+    const assigneeStrs = newTask.assigneeIds.map(id => id.toString());
+    await notifyUsers(assigneeStrs.filter(id => id !== userId), {
+      type: 'assignment',
+      title: 'New Task Assigned',
+      message: `You were assigned to "${title}" (${key})`,
+      actorId: userId,
+      link: taskNotificationLink(projectId, taskId),
+    });
+
     res.status(201).json({
       success: true,
       task: {
@@ -230,6 +241,22 @@ router.put('/:id', verifyToken, requireTaskAccess(2), async (req: AuthRequest, r
     if (columnId !== undefined) {
       updateFields.columnId = columnId;
       updateFields.completedAt = columnId === 'done' ? new Date() : null;
+    }
+
+    // Notify newly assigned users about the change.
+    if (assigneeIds !== undefined && Array.isArray(assigneeIds)) {
+      const oldIds = new Set((current.assigneeIds || []).map(id => id.toString()));
+      const newStr = assigneeIds.map((aid: string) => aid?.toString());
+      const added = newStr.filter(id => id && !oldIds.has(id));
+      if (added.length > 0) {
+        await notifyUsers(added, {
+          type: 'assignment',
+          title: 'New Task Assigned',
+          message: `You were assigned to "${current.title}" (${current.key || 'task'})`,
+          actorId: req.user?.id,
+          link: taskNotificationLink(current.projectId, id),
+        });
+      }
     }
 
     await tasksCollection.updateOne(
@@ -401,6 +428,24 @@ router.post('/:id/comments', verifyToken, requireTaskAccess(2), async (req: Auth
       actorId: userId,
       action: `Commented on "${task?.title || 'task'}"`,
     });
+
+    // Notify the task's watchers unless they wrote the comment themselves.
+    const watcherIds = new Set<string>();
+    if (task) {
+      if (task.reporterId) watcherIds.add(task.reporterId.toString());
+      (task.assigneeIds || []).forEach(aid => watcherIds.add(aid.toString()));
+    }
+    if (userId) watcherIds.delete(userId);
+    const authorName = user?.name || 'A team member';
+    if (task) {
+      await notifyUsers(Array.from(watcherIds), {
+        type: 'comment',
+        title: `Comment on "${task?.title || 'task'}"`,
+        message: `"${text}" — ${authorName}`,
+        actorId: userId,
+        link: taskNotificationLink(task.projectId, id),
+      });
+    }
 
     res.status(201).json({
       success: true,

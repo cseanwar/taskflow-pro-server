@@ -235,10 +235,97 @@ router.get('/me', verifyToken, async (req: AuthRequest, res: Response) => {
         role: user.role,
         avatar: user.avatar,
         status: user.status,
+        jobTitle: user.jobTitle || '',
+        department: user.department || '',
+        notificationPrefs: user.notificationPrefs,
       },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch user profile.' });
+  }
+});
+
+// Update Current User Profile (name, avatar, job title, department, notification prefs)
+router.put('/me', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const db = await connectDB();
+    const usersCollection = db.collection<IUser>('users');
+
+    const { name, avatar, jobTitle, department, notificationPrefs } = req.body;
+    const updateFields: Record<string, unknown> = { updatedAt: new Date() };
+
+    if (typeof name === 'string' && name.trim()) updateFields.name = name.trim();
+    if (typeof avatar === 'string' && /^https?:\/\//i.test(avatar) && avatar.length <= 2048) {
+      updateFields.avatar = avatar;
+    }
+    if (typeof jobTitle === 'string') updateFields.jobTitle = jobTitle.trim();
+    if (typeof department === 'string') updateFields.department = department.trim();
+    if (notificationPrefs && typeof notificationPrefs === 'object') {
+      updateFields.notificationPrefs = notificationPrefs;
+    }
+
+    await usersCollection.updateOne(
+      { _id: new ObjectId(req.user?.id) },
+      { $set: updateFields }
+    );
+
+    const user = await usersCollection.findOne({ _id: new ObjectId(req.user?.id) });
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully.',
+      user: {
+        id: user?._id?.toString(),
+        name: user?.name,
+        email: user?.email,
+        role: user?.role,
+        avatar: user?.avatar,
+        status: user?.status,
+        jobTitle: user?.jobTitle || '',
+        department: user?.department || '',
+        notificationPrefs: user?.notificationPrefs,
+      },
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update profile.' });
+  }
+});
+
+// Change Current User Password
+router.post('/change-password', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Current and new password are required.' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ success: false, message: 'New password must be at least 8 characters.' });
+    }
+
+    const db = await connectDB();
+    const usersCollection = db.collection<IUser>('users');
+
+    const user = await usersCollection.findOne({ _id: new ObjectId(req.user?.id) });
+    if (!user || !user.password) {
+      return res.status(400).json({ success: false, message: 'Password change is only available for local accounts.' });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Current password is incorrect.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await usersCollection.updateOne(
+      { _id: new ObjectId(req.user?.id) },
+      { $set: { password: hashedPassword, updatedAt: new Date() } }
+    );
+
+    res.status(200).json({ success: true, message: 'Password updated successfully.' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ success: false, message: 'Failed to change password.' });
   }
 });
 

@@ -81,6 +81,8 @@ router.get('/workspace/:workspaceId', auth_middleware_1.verifyToken, (0, authz_m
             workspaceId: p.workspaceId.toString(),
             managerId: p.managerId.toString(),
             members: p.members.map(m => m.toString()),
+            memberRoles: (p.memberRoles || []).map(mr => ({ ...mr, userId: mr.userId.toString() })),
+            features: p.features || {},
         }));
         res.status(200).json({ success: true, projects: formattedProjects });
     }
@@ -106,6 +108,11 @@ router.get('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.require
             workspaceId: project.workspaceId.toString(),
             managerId: project.managerId.toString(),
             members: project.members.map(m => m.toString()),
+            memberRoles: (project.memberRoles || []).map(mr => ({
+                ...mr,
+                userId: mr.userId.toString(),
+            })),
+            features: project.features || {},
             board: board ? { ...board, _id: board._id?.toString(), projectId: board.projectId.toString() } : null,
         };
         res.status(200).json({ success: true, project: formattedProject });
@@ -118,7 +125,7 @@ router.get('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.require
 router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
     try {
         const id = req.params.id;
-        const { name, code, description, category, status } = req.body;
+        const { name, code, description, category, status, features } = req.body;
         const db = await (0, db_1.connectDB)();
         const projectsCollection = db.collection('projects');
         const updateFields = { updatedAt: new Date() };
@@ -132,11 +139,108 @@ router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.require
             updateFields.category = category;
         if (status)
             updateFields.status = status;
+        if (features && typeof features === 'object')
+            updateFields.features = features;
         await projectsCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateFields });
         res.status(200).json({ success: true, message: 'Project updated successfully.' });
     }
     catch (error) {
         res.status(500).json({ success: false, message: 'Failed to update project.' });
+    }
+});
+// Add or Set Project Member Role (Project Manager+)
+router.post('/:id/members', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { userId, role } = req.body;
+        const allowedRoles = ['Project Manager', 'Team Member', 'Guest User', 'Workspace Owner'];
+        if (!userId) {
+            return res.status(400).json({ success: false, message: 'User is required.' });
+        }
+        if (!role || !allowedRoles.includes(role)) {
+            return res.status(400).json({ success: false, message: 'Invalid role.' });
+        }
+        const db = await (0, db_1.connectDB)();
+        const projectsCollection = db.collection('projects');
+        const usersCollection = db.collection('users');
+        const project = await projectsCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+        if (!project)
+            return res.status(404).json({ success: false, message: 'Project not found.' });
+        const targetUser = await usersCollection.findOne({ _id: new mongodb_1.ObjectId(userId) });
+        if (!targetUser)
+            return res.status(400).json({ success: false, message: 'User not found.' });
+        // Keep the id-based members list in sync and store the granted role.
+        const memberId = new mongodb_1.ObjectId(userId);
+        const members = project.members.some(m => m.toString() === userId)
+            ? project.members
+            : [...project.members, memberId];
+        const memberRoles = (project.memberRoles || []).filter(mr => mr.userId.toString() !== userId);
+        memberRoles.push({ userId: memberId, role: role });
+        await projectsCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { members, memberRoles, updatedAt: new Date() } });
+        res.status(200).json({
+            success: true,
+            message: 'Project member added.',
+            member: { userId, role },
+        });
+    }
+    catch (error) {
+        console.error('Add project member error:', error);
+        res.status(500).json({ success: false, message: 'Failed to add project member.' });
+    }
+});
+// Change Project Member Role (Project Manager+)
+router.patch('/:id/members/:userId/role', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
+    try {
+        const id = req.params.id;
+        const userId = req.params.userId;
+        const { role } = req.body;
+        const allowedRoles = ['Project Manager', 'Team Member', 'Guest User', 'Workspace Owner'];
+        if (!role || !allowedRoles.includes(role)) {
+            return res.status(400).json({ success: false, message: 'Invalid role.' });
+        }
+        const db = await (0, db_1.connectDB)();
+        const projectsCollection = db.collection('projects');
+        const project = await projectsCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+        if (!project)
+            return res.status(404).json({ success: false, message: 'Project not found.' });
+        if (project.managerId?.toString() === userId) {
+            return res.status(400).json({ success: false, message: 'The project lead role cannot be changed.' });
+        }
+        const memberRoles = [
+            ...(project.memberRoles || []).filter(mr => mr.userId.toString() !== userId),
+            { userId: new mongodb_1.ObjectId(userId), role: role },
+        ];
+        await projectsCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { memberRoles, updatedAt: new Date() } });
+        res.status(200).json({ success: true, message: 'Project member role updated.' });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update project member role.' });
+    }
+});
+// Remove Project Member (Project Manager+)
+router.delete('/:id/members/:userId', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
+    try {
+        const id = req.params.id;
+        const userId = req.params.userId;
+        const db = await (0, db_1.connectDB)();
+        const projectsCollection = db.collection('projects');
+        const project = await projectsCollection.findOne({ _id: new mongodb_1.ObjectId(id) });
+        if (!project)
+            return res.status(404).json({ success: false, message: 'Project not found.' });
+        if (project.managerId?.toString() === userId) {
+            return res.status(400).json({ success: false, message: 'The project lead cannot be removed.' });
+        }
+        await projectsCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, {
+            $set: {
+                members: project.members.filter(m => m.toString() !== userId),
+                memberRoles: (project.memberRoles || []).filter(mr => mr.userId.toString() !== userId),
+                updatedAt: new Date(),
+            },
+        });
+        res.status(200).json({ success: true, message: 'Project member removed.' });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to remove project member.' });
     }
 });
 // Delete Project (Project Manager / Workspace Owner / Administrator)

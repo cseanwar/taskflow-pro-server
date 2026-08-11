@@ -3,9 +3,24 @@ import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { INVITABLE_ROLES, requireWorkspaceAccess } from '../middleware/authz.middleware';
-import { IWorkspace, IInvitation, IUser, UserRole } from '../types';
+import { IWorkspace, IInvitation, IUser, IActivityLog, UserRole } from '../types';
 
 const router = Router();
+
+async function logWorkspaceActivity(
+  workspaceId: string | ObjectId,
+  actorId: string | undefined,
+  action: string
+): Promise<void> {
+  if (!actorId) return;
+  const db = await connectDB();
+  await db.collection<IActivityLog>('activity_logs').insertOne({
+    workspaceId: new ObjectId(workspaceId.toString()),
+    actorId: new ObjectId(actorId),
+    action,
+    createdAt: new Date(),
+  } as any);
+}
 
 // Create Workspace
 router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
@@ -177,6 +192,8 @@ router.post('/:id/invite', verifyToken, requireWorkspaceAccess({ min: 4 }), asyn
         }
       );
 
+      await logWorkspaceActivity(id, req.user?.id, `Added ${email}`);
+
       return res.status(200).json({ success: true, message: 'User added to workspace.' });
     }
 
@@ -193,6 +210,8 @@ router.post('/:id/invite', verifyToken, requireWorkspaceAccess({ min: 4 }), asyn
     };
 
     await invitationsCollection.insertOne(newInvite as any);
+
+    await logWorkspaceActivity(id, req.user?.id, `Invited ${email} (${role || 'Team Member'})`);
 
     res.status(200).json({ success: true, message: 'Invitation sent successfully.' });
   } catch (error) {
@@ -227,11 +246,94 @@ router.delete(
         }
       );
 
+      await logWorkspaceActivity(id, req.user?.id, `Removed a member`);
+
       res.status(200).json({ success: true, message: 'Member removed from workspace.' });
     } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to remove member.' });
     }
   }
 );
+
+// Change Member Role (Workspace Owner / Administrator only)
+router.patch(
+  '/:id/members/:userId/role',
+  verifyToken,
+  requireWorkspaceAccess({ min: 4 }),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const id = req.params.id as string;
+      const userId = req.params.userId as string;
+      const { role } = req.body;
+
+      if (!role || !INVITABLE_ROLES.includes(role as UserRole)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Role is not assignable. Choose Project Manager, Team Member, or Guest User.',
+        });
+      }
+
+      const db = await connectDB();
+      const workspacesCollection = db.collection<IWorkspace>('workspaces');
+
+      // Guardrails: cannot alter the owner, and an owner/admin cannot demote themselves.
+      const workspace = await workspacesCollection.findOne({ _id: new ObjectId(id) });
+      if (!workspace) {
+        return res.status(404).json({ success: false, message: 'Workspace not found.' });
+      }
+      if (workspace.ownerId?.toString() === userId) {
+        return res.status(400).json({ success: false, message: 'The workspace owner role cannot be changed.' });
+      }
+      const isMember = workspace.members.some(m => m.userId.toString() === userId);
+      if (!isMember) {
+        return res.status(404).json({ success: false, message: 'User is not a member of this workspace.' });
+      }
+
+      await workspacesCollection.updateOne(
+        { _id: new ObjectId(id), 'members.userId': new ObjectId(userId) },
+        { $set: { 'members.$.role': role, updatedAt: new Date() } }
+      );
+
+      await logWorkspaceActivity(id, req.user?.id, `Changed member role to ${role}`);
+
+      res.status(200).json({ success: true, message: 'Member role updated.' });
+    } catch (error) {
+      res.status(500).json({ success: false, message: 'Failed to update member role.' });
+    }
+  }
+);
+
+// Workspace Activity / Access Log (any member can view)
+router.get('/:id/activity', verifyToken, requireWorkspaceAccess({ min: 1 }), async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const db = await connectDB();
+    const logsCollection = db.collection<IActivityLog>('activity_logs');
+    const usersCollection = db.collection<IUser>('users');
+
+    const logs = await logsCollection
+      .find({ workspaceId: new ObjectId(id) })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .toArray();
+
+    const actorIds = logs.map(l => new ObjectId(l.actorId.toString()));
+    const actors = await usersCollection
+      .find({ _id: { $in: actorIds } }, { projection: { password: 0 } })
+      .toArray();
+    const actorMap = new Map(actors.map(a => [a._id?.toString(), { name: a.name, avatar: a.avatar }]));
+
+    const formattedLogs = logs.map(l => ({
+      ...l,
+      _id: l._id?.toString(),
+      actorId: l.actorId.toString(),
+      actor: actorMap.get(l.actorId.toString()) || { name: 'Unknown User', avatar: '' },
+    }));
+
+    res.status(200).json({ success: true, activity: formattedLogs });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch workspace activity.' });
+  }
+});
 
 export default router;

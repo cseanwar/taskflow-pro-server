@@ -4,6 +4,7 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const authz_middleware_1 = require("../middleware/authz.middleware");
 const router = (0, express_1.Router)();
 // Create Workspace
 router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
@@ -72,7 +73,7 @@ router.get('/', auth_middleware_1.verifyToken, async (req, res) => {
     }
 });
 // Get Workspace Details with Member Details
-router.get('/:id', auth_middleware_1.verifyToken, async (req, res) => {
+router.get('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireWorkspaceAccess)({ min: 1 }), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -110,13 +111,21 @@ router.get('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to fetch workspace details.' });
     }
 });
-// Invite Member to Workspace
-router.post('/:id/invite', auth_middleware_1.verifyToken, async (req, res) => {
+// Invite Member to Workspace (Workspace Owner / Administrator only)
+router.post('/:id/invite', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireWorkspaceAccess)({ min: 4 }), async (req, res) => {
     try {
         const id = req.params.id;
         const { email, role } = req.body;
         if (!email) {
             return res.status(400).json({ success: false, message: 'Member email is required.' });
+        }
+        // Only workspace-grantable roles may be assigned. 'Administrator' is
+        // platform-level and is never assignable via invitation.
+        if (role && !authz_middleware_1.INVITABLE_ROLES.includes(role)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Role is not assignable. Choose Project Manager, Team Member, or Guest User.',
+            });
         }
         const db = await (0, db_1.connectDB)();
         const workspacesCollection = db.collection('workspaces');
@@ -162,13 +171,19 @@ router.post('/:id/invite', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to invite member.' });
     }
 });
-// Remove Member from Workspace
-router.delete('/:id/members/:userId', auth_middleware_1.verifyToken, async (req, res) => {
+// Remove Member from Workspace (Workspace Owner / Administrator only)
+router.delete('/:id/members/:userId', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireWorkspaceAccess)({ min: 4 }), async (req, res) => {
     try {
         const id = req.params.id;
         const userId = req.params.userId;
         const db = await (0, db_1.connectDB)();
         const workspacesCollection = db.collection('workspaces');
+        if (req.workspace?.ownerId?.toString() === userId) {
+            return res.status(400).json({ success: false, message: 'The workspace owner cannot be removed.' });
+        }
+        if (userId === req.user?.id) {
+            return res.status(400).json({ success: false, message: 'You cannot remove yourself from the workspace.' });
+        }
         await workspacesCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, {
             $pull: { members: { userId: new mongodb_1.ObjectId(userId) } },
             $set: { updatedAt: new Date() },

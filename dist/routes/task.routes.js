@@ -4,6 +4,7 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const authz_middleware_1 = require("../middleware/authz.middleware");
 const activity_1 = require("../lib/activity");
 const router = (0, express_1.Router)();
 // Compute the next sequential task key for a project, e.g. "TF-1", "TF-2"...
@@ -24,8 +25,8 @@ async function nextTaskKey(tasksCollection, projectsCollection, projectId) {
     });
     return `${prefix}-${maxNumber + 1}`;
 }
-// Get Tasks by Project (Supports filter by Sprint, Assignee, Priority, Status/Column)
-router.get('/project/:projectId', auth_middleware_1.verifyToken, async (req, res) => {
+// Get Tasks by Project (read for any workspace member / guest)
+router.get('/project/:projectId', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ locator: { source: 'params', key: 'projectId' }, min: 1 }), async (req, res) => {
     try {
         const projectId = req.params.projectId;
         const { sprintId, priority, columnId, assigneeId } = req.query;
@@ -70,8 +71,8 @@ router.get('/project/:projectId', auth_middleware_1.verifyToken, async (req, res
         res.status(500).json({ success: false, message: 'Failed to fetch tasks.' });
     }
 });
-// Create Task
-router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
+// Create Task (Project Manager / Workspace Owner / Administrator)
+router.post('/', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ locator: { source: 'body', key: 'projectId' }, min: 3 }), async (req, res) => {
     try {
         const { projectId, columnId, sprintId, title, description, priority, estimate, dueDate, assigneeIds, labels, attachments, checklist } = req.body;
         if (!projectId || !title) {
@@ -138,8 +139,8 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to create task.' });
     }
 });
-// Move / Reorder Task (Drag and drop)
-router.patch('/:id/move', auth_middleware_1.verifyToken, async (req, res) => {
+// Move / Reorder Task — drag & drop status change (Team Member and above)
+router.patch('/:id/move', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(2), async (req, res) => {
     try {
         const id = req.params.id;
         const { columnId, order, sprintId } = req.body;
@@ -171,8 +172,8 @@ router.patch('/:id/move', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to move task.' });
     }
 });
-// Update Task Details
-router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
+// Update Task Details (Project Manager / Workspace Owner / Administrator)
+router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(3), async (req, res) => {
     try {
         const id = req.params.id;
         const { title, description, priority, estimate, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
@@ -253,8 +254,8 @@ router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update task.' });
     }
 });
-// Delete Task
-router.delete('/:id', auth_middleware_1.verifyToken, async (req, res) => {
+// Delete Task (Project Manager / Workspace Owner / Administrator)
+router.delete('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(3), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -268,8 +269,8 @@ router.delete('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to delete task.' });
     }
 });
-// Get Task Activity Log
-router.get('/:id/activity', auth_middleware_1.verifyToken, async (req, res) => {
+// Get Task Activity Log (any workspace member / guest)
+router.get('/:id/activity', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(1), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -297,8 +298,8 @@ router.get('/:id/activity', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to fetch task activity.' });
     }
 });
-// Get Task Comments
-router.get('/:id/comments', auth_middleware_1.verifyToken, async (req, res) => {
+// Get Task Comments (any workspace member / guest)
+router.get('/:id/comments', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(1), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -326,8 +327,8 @@ router.get('/:id/comments', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to fetch comments.' });
     }
 });
-// Add Comment to Task
-router.post('/:id/comments', auth_middleware_1.verifyToken, async (req, res) => {
+// Add Comment to Task (Team Member and above)
+router.post('/:id/comments', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireTaskAccess)(2), async (req, res) => {
     try {
         const id = req.params.id;
         const { text, attachments } = req.body;

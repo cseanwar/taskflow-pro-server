@@ -2,12 +2,17 @@ import { Router, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
+import { requireProjectAccess, requireWorkspaceAccess } from '../middleware/authz.middleware';
 import { IProject, IBoard, ITask } from '../types';
 
 const router = Router();
 
-// Create Project
-router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
+// Create Project (Project Manager / Workspace Owner / Administrator in the target workspace)
+router.post(
+  '/',
+  verifyToken,
+  requireWorkspaceAccess({ locator: { source: 'body', key: 'workspaceId' }, min: 3 }),
+  async (req: AuthRequest, res: Response) => {
   try {
     const { workspaceId, name, code, description, category } = req.body;
     if (!workspaceId || !name) {
@@ -73,8 +78,12 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Get Projects by Workspace
-router.get('/workspace/:workspaceId', verifyToken, async (req: AuthRequest, res: Response) => {
+// List Projects by Workspace (any workspace member, including guests, can read)
+router.get(
+  '/workspace/:workspaceId',
+  verifyToken,
+  requireWorkspaceAccess({ locator: { source: 'params', key: 'workspaceId' }, min: 1 }),
+  async (req: AuthRequest, res: Response) => {
   try {
     const workspaceId = req.params.workspaceId as string;
     const db = await connectDB();
@@ -98,8 +107,8 @@ router.get('/workspace/:workspaceId', verifyToken, async (req: AuthRequest, res:
   }
 });
 
-// Get Single Project Details
-router.get('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+// Get Single Project Details (read for any workspace member / guest)
+router.get('/:id', verifyToken, requireProjectAccess({ min: 1 }), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const db = await connectDB();
@@ -128,8 +137,8 @@ router.get('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Update Project
-router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+// Update Project (Project Manager / Workspace Owner / Administrator)
+router.put('/:id', verifyToken, requireProjectAccess({ min: 3 }), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const { name, code, description, category, status } = req.body;
@@ -155,8 +164,8 @@ router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Delete Project
-router.delete('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+// Delete Project (Project Manager / Workspace Owner / Administrator)
+router.delete('/:id', verifyToken, requireProjectAccess({ min: 3 }), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const db = await connectDB();
@@ -174,8 +183,8 @@ router.delete('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Duplicate Project
-router.post('/:id/duplicate', verifyToken, async (req: AuthRequest, res: Response) => {
+// Duplicate Project (Project Manager / Workspace Owner / Administrator)
+router.post('/:id/duplicate', verifyToken, requireProjectAccess({ min: 3 }), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const userId = req.user?.id;

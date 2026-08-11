@@ -5,14 +5,15 @@ import { OAuth2Client } from 'google-auth-library';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
-import { IUser } from '../types';
+import { requireGlobalRole } from '../middleware/authz.middleware';
+import { IUser, UserRole } from '../types';
 
 const router = Router();
 
 // Register / Sign up
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { name, email, password, role, avatar } = req.body;
+    const { name, email, password, avatar } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, message: 'Name, email, and password are required.' });
     }
@@ -30,12 +31,19 @@ router.post('/register', async (req: Request, res: Response) => {
       typeof avatar === 'string' && /^https?:\/\//i.test(avatar) && avatar.length <= 2048
         ? avatar
         : `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}`;
+
+    // Roles are never accepted from the request body. Every account starts as
+    // 'Team Member'; the first account created in an empty database becomes the
+    // 'Administrator' (bootstrap) so the platform has a named admin.
+    const userCount = await usersCollection.countDocuments();
+    const role: UserRole = userCount === 0 ? 'Administrator' : 'Team Member';
+
     const newUser: IUser = {
       name,
       email: email.toLowerCase(),
       password: hashedPassword,
       avatar: avatarUrl,
-      role: role || 'Team Member',
+      role,
       provider: 'local',
       isVerified: true,
       status: 'active',
@@ -258,7 +266,7 @@ router.get('/users', verifyToken, async (req: AuthRequest, res: Response) => {
 });
 
 // Admin Update User Status (active / suspended)
-router.patch('/users/:id/status', verifyToken, async (req: AuthRequest, res: Response) => {
+router.patch('/users/:id/status', verifyToken, requireGlobalRole('Administrator'), async (req: AuthRequest, res: Response) => {
   try {
     const { status } = req.body;
     if (!['active', 'suspended'].includes(status)) {
@@ -267,8 +275,11 @@ router.patch('/users/:id/status', verifyToken, async (req: AuthRequest, res: Res
 
     const db = await connectDB();
     const usersCollection = db.collection<IUser>('users');
-
     const idStr = req.params.id as string;
+    if (idStr === req.user?.id) {
+      return res.status(400).json({ success: false, message: 'You cannot change your own account status.' });
+    }
+
     await usersCollection.updateOne(
       { _id: new ObjectId(idStr) },
       { $set: { status, updatedAt: new Date() } }

@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
+import { requireGlobalOrAnyWorkspaceMinLevel, requireProjectAccess } from '../middleware/authz.middleware';
 import { ITask, IProject, IWorkspace, ISprint, IActivityLog, IUser } from '../types';
 
 const router = Router();
@@ -184,8 +185,8 @@ router.get('/user-dashboard', verifyToken, async (req: AuthRequest, res: Respons
   }
 });
 
-// Get Project Overview Analytics (completion, velocity, team workload, activity)
-router.get('/project/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+// Get Project Overview Analytics (Project Manager / Workspace Owner / Administrator)
+router.get('/project/:id', verifyToken, requireProjectAccess({ min: 3 }), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const db = await connectDB();
@@ -393,8 +394,9 @@ router.get('/project/:id', verifyToken, async (req: AuthRequest, res: Response) 
 });
 
 
-// List the user's active projects (for the reports selector)
-router.get('/projects', verifyToken, async (req: AuthRequest, res: Response) => {
+// List the user's active projects for the reports selector
+// (requires Project Manager level in at least one workspace, or a PM+ global role)
+router.get('/projects', verifyToken, requireGlobalOrAnyWorkspaceMinLevel(3), async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });

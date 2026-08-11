@@ -2,13 +2,18 @@ import { Router, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
+import { requireProjectAccess, requireSprintAccess } from '../middleware/authz.middleware';
 import { ISprint, ITask } from '../types';
 import { logActivity } from '../lib/activity';
 
 const router = Router();
 
-// Create Sprint
-router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
+// Create Sprint (Project Manager / Workspace Owner / Administrator)
+router.post(
+  '/',
+  verifyToken,
+  requireProjectAccess({ locator: { source: 'body', key: 'projectId' }, min: 3 }),
+  async (req: AuthRequest, res: Response) => {
   try {
     const { projectId, name, goal, startDate, endDate } = req.body;
     if (!projectId || !name) {
@@ -44,8 +49,12 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Get Sprints by Project
-router.get('/project/:projectId', verifyToken, async (req: AuthRequest, res: Response) => {
+// Get Sprints by Project (any workspace member / guest)
+router.get(
+  '/project/:projectId',
+  verifyToken,
+  requireProjectAccess({ locator: { source: 'params', key: 'projectId' }, min: 1 }),
+  async (req: AuthRequest, res: Response) => {
   try {
     const projectId = req.params.projectId as string;
     const db = await connectDB();
@@ -68,8 +77,8 @@ router.get('/project/:projectId', verifyToken, async (req: AuthRequest, res: Res
   }
 });
 
-// Start or End Sprint
-router.patch('/:id/status', verifyToken, async (req: AuthRequest, res: Response) => {
+// Start / Complete Sprint (Project Manager / Workspace Owner / Administrator)
+router.patch('/:id/status', verifyToken, requireSprintAccess(3), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const { status } = req.body;

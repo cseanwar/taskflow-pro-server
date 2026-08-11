@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { ObjectId } from 'mongodb';
 import { connectDB } from '../config/db';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
+import { requireProjectAccess, requireTaskAccess } from '../middleware/authz.middleware';
 import { ITask, IComment, IActivityLog, IProject, IUser } from '../types';
 import { logActivity, COLUMN_TITLES } from '../lib/activity';
 
@@ -27,8 +28,12 @@ async function nextTaskKey(tasksCollection: any, projectsCollection: any, projec
   return `${prefix}-${maxNumber + 1}`;
 }
 
-// Get Tasks by Project (Supports filter by Sprint, Assignee, Priority, Status/Column)
-router.get('/project/:projectId', verifyToken, async (req: AuthRequest, res: Response) => {
+// Get Tasks by Project (read for any workspace member / guest)
+router.get(
+  '/project/:projectId',
+  verifyToken,
+  requireProjectAccess({ locator: { source: 'params', key: 'projectId' }, min: 1 }),
+  async (req: AuthRequest, res: Response) => {
   try {
     const projectId = req.params.projectId as string;
     const { sprintId, priority, columnId, assigneeId } = req.query;
@@ -77,8 +82,12 @@ router.get('/project/:projectId', verifyToken, async (req: AuthRequest, res: Res
   }
 });
 
-// Create Task
-router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
+// Create Task (Project Manager / Workspace Owner / Administrator)
+router.post(
+  '/',
+  verifyToken,
+  requireProjectAccess({ locator: { source: 'body', key: 'projectId' }, min: 3 }),
+  async (req: AuthRequest, res: Response) => {
   try {
     const { projectId, columnId, sprintId, title, description, priority, estimate, dueDate, assigneeIds, labels, attachments, checklist } = req.body;
 
@@ -154,8 +163,8 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Move / Reorder Task (Drag and drop)
-router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) => {
+// Move / Reorder Task — drag & drop status change (Team Member and above)
+router.patch('/:id/move', verifyToken, requireTaskAccess(2), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const { columnId, order, sprintId } = req.body;
@@ -194,8 +203,8 @@ router.patch('/:id/move', verifyToken, async (req: AuthRequest, res: Response) =
   }
 });
 
-// Update Task Details
-router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+// Update Task Details (Team Member and above — status, checklist, attachments, deadlines)
+router.put('/:id', verifyToken, requireTaskAccess(2), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const { title, description, priority, estimate, dueDate, assigneeIds, labels, checklist, attachments, columnId } = req.body;
@@ -274,8 +283,8 @@ router.put('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Delete Task
-router.delete('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+// Delete Task (Project Manager / Workspace Owner / Administrator)
+router.delete('/:id', verifyToken, requireTaskAccess(3), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const db = await connectDB();
@@ -291,8 +300,8 @@ router.delete('/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Get Task Activity Log
-router.get('/:id/activity', verifyToken, async (req: AuthRequest, res: Response) => {
+// Get Task Activity Log (any workspace member / guest)
+router.get('/:id/activity', verifyToken, requireTaskAccess(1), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const db = await connectDB();
@@ -324,8 +333,8 @@ router.get('/:id/activity', verifyToken, async (req: AuthRequest, res: Response)
   }
 });
 
-// Get Task Comments
-router.get('/:id/comments', verifyToken, async (req: AuthRequest, res: Response) => {
+// Get Task Comments (any workspace member / guest)
+router.get('/:id/comments', verifyToken, requireTaskAccess(1), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const db = await connectDB();
@@ -358,8 +367,8 @@ router.get('/:id/comments', verifyToken, async (req: AuthRequest, res: Response)
   }
 });
 
-// Add Comment to Task
-router.post('/:id/comments', verifyToken, async (req: AuthRequest, res: Response) => {
+// Add Comment to Task (Team Member and above)
+router.post('/:id/comments', verifyToken, requireTaskAccess(2), async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
     const { text, attachments } = req.body;

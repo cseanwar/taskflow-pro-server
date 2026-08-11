@@ -4,10 +4,11 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const authz_middleware_1 = require("../middleware/authz.middleware");
 const activity_1 = require("../lib/activity");
 const router = (0, express_1.Router)();
-// Create Sprint
-router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
+// Create Sprint (Project Manager / Workspace Owner / Administrator)
+router.post('/', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ locator: { source: 'body', key: 'projectId' }, min: 3 }), async (req, res) => {
     try {
         const { projectId, name, goal, startDate, endDate } = req.body;
         if (!projectId || !name) {
@@ -39,8 +40,8 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to create sprint.' });
     }
 });
-// Get Sprints by Project
-router.get('/project/:projectId', auth_middleware_1.verifyToken, async (req, res) => {
+// Get Sprints by Project (any workspace member / guest)
+router.get('/project/:projectId', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ locator: { source: 'params', key: 'projectId' }, min: 1 }), async (req, res) => {
     try {
         const projectId = req.params.projectId;
         const db = await (0, db_1.connectDB)();
@@ -60,8 +61,8 @@ router.get('/project/:projectId', auth_middleware_1.verifyToken, async (req, res
         res.status(500).json({ success: false, message: 'Failed to fetch sprints.' });
     }
 });
-// Start or End Sprint
-router.patch('/:id/status', auth_middleware_1.verifyToken, async (req, res) => {
+// Start / Complete Sprint (Project Manager / Workspace Owner / Administrator)
+router.patch('/:id/status', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireSprintAccess)(3), async (req, res) => {
     try {
         const id = req.params.id;
         const { status } = req.body;

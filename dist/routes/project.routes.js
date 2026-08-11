@@ -4,9 +4,10 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const authz_middleware_1 = require("../middleware/authz.middleware");
 const router = (0, express_1.Router)();
-// Create Project
-router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
+// Create Project (Project Manager / Workspace Owner / Administrator in the target workspace)
+router.post('/', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireWorkspaceAccess)({ locator: { source: 'body', key: 'workspaceId' }, min: 3 }), async (req, res) => {
     try {
         const { workspaceId, name, code, description, category } = req.body;
         if (!workspaceId || !name) {
@@ -65,8 +66,8 @@ router.post('/', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to create project.' });
     }
 });
-// Get Projects by Workspace
-router.get('/workspace/:workspaceId', auth_middleware_1.verifyToken, async (req, res) => {
+// List Projects by Workspace (any workspace member, including guests, can read)
+router.get('/workspace/:workspaceId', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireWorkspaceAccess)({ locator: { source: 'params', key: 'workspaceId' }, min: 1 }), async (req, res) => {
     try {
         const workspaceId = req.params.workspaceId;
         const db = await (0, db_1.connectDB)();
@@ -87,8 +88,8 @@ router.get('/workspace/:workspaceId', auth_middleware_1.verifyToken, async (req,
         res.status(500).json({ success: false, message: 'Failed to fetch projects.' });
     }
 });
-// Get Single Project Details
-router.get('/:id', auth_middleware_1.verifyToken, async (req, res) => {
+// Get Single Project Details (read for any workspace member / guest)
+router.get('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 1 }), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -113,8 +114,8 @@ router.get('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to fetch project details.' });
     }
 });
-// Update Project
-router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
+// Update Project (Project Manager / Workspace Owner / Administrator)
+router.put('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
     try {
         const id = req.params.id;
         const { name, code, description, category, status } = req.body;
@@ -138,8 +139,8 @@ router.put('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update project.' });
     }
 });
-// Delete Project
-router.delete('/:id', auth_middleware_1.verifyToken, async (req, res) => {
+// Delete Project (Project Manager / Workspace Owner / Administrator)
+router.delete('/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -155,8 +156,8 @@ router.delete('/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to delete project.' });
     }
 });
-// Duplicate Project
-router.post('/:id/duplicate', auth_middleware_1.verifyToken, async (req, res) => {
+// Duplicate Project (Project Manager / Workspace Owner / Administrator)
+router.post('/:id/duplicate', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
     try {
         const id = req.params.id;
         const userId = req.user?.id;

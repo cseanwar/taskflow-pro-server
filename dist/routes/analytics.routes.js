@@ -4,6 +4,7 @@ const express_1 = require("express");
 const mongodb_1 = require("mongodb");
 const db_1 = require("../config/db");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const authz_middleware_1 = require("../middleware/authz.middleware");
 const router = (0, express_1.Router)();
 const PRIORITY_RANK = { Urgent: 0, High: 1, Medium: 2, Low: 3 };
 // Normalize a dueDate value to a YYYY-MM-DD key (timezone-safe for date-only strings).
@@ -172,8 +173,8 @@ router.get('/user-dashboard', auth_middleware_1.verifyToken, async (req, res) =>
         res.status(500).json({ success: false, message: 'Failed to fetch user dashboard.' });
     }
 });
-// Get Project Overview Analytics (completion, velocity, team workload, activity)
-router.get('/project/:id', auth_middleware_1.verifyToken, async (req, res) => {
+// Get Project Overview Analytics (Project Manager / Workspace Owner / Administrator)
+router.get('/project/:id', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireProjectAccess)({ min: 3 }), async (req, res) => {
     try {
         const id = req.params.id;
         const db = await (0, db_1.connectDB)();
@@ -361,8 +362,9 @@ router.get('/project/:id', auth_middleware_1.verifyToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to fetch project overview.' });
     }
 });
-// List the user's active projects (for the reports selector)
-router.get('/projects', auth_middleware_1.verifyToken, async (req, res) => {
+// List the user's active projects for the reports selector
+// (requires Project Manager level in at least one workspace, or a PM+ global role)
+router.get('/projects', auth_middleware_1.verifyToken, (0, authz_middleware_1.requireGlobalOrAnyWorkspaceMinLevel)(3), async (req, res) => {
     try {
         const userId = req.user?.id;
         if (!userId)

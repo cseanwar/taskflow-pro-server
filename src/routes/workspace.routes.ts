@@ -25,7 +25,7 @@ async function logWorkspaceActivity(
 // Create Workspace
 router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { name, description, logo } = req.body;
+    const { name, description, logo, slug, industry, features } = req.body;
     if (!name) {
       return res.status(400).json({ success: false, message: 'Workspace name is required.' });
     }
@@ -33,16 +33,27 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+    const derivedSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+    const requestedSlug = slug ? slug.toLowerCase().replace(/[^a-z0-9-]+/g, '').replace(/(^-|-$)+/g, '') : '';
+    const slugValue = requestedSlug || derivedSlug;
 
     const db = await connectDB();
     const workspacesCollection = db.collection<IWorkspace>('workspaces');
 
+    // A user-managed URL must be unique; fall back to a name-derived slug on collision.
+    let uniqueSlug = slugValue;
+    if (requestedSlug) {
+      const existing = await workspacesCollection.findOne({ slug: uniqueSlug });
+      if (existing) uniqueSlug = derivedSlug;
+    }
+
     const newWorkspace: IWorkspace = {
       name,
-      slug,
+      slug: uniqueSlug,
       description: description || '',
       logo: logo || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name)}`,
+      industry: industry || '',
+      features: features && typeof features === 'object' ? features : undefined,
       ownerId: new ObjectId(userId),
       members: [
         {
@@ -62,6 +73,39 @@ router.post('/', verifyToken, async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error('Create workspace error:', error);
     res.status(500).json({ success: false, message: 'Failed to create workspace.' });
+  }
+});
+
+// Update Workspace (features, description, industry — Workspace Owner / Administrator)
+router.patch('/:id', verifyToken, requireWorkspaceAccess({ min: 4 }), async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { name, description, industry, features } = req.body;
+
+    const db = await connectDB();
+    const workspacesCollection = db.collection<IWorkspace>('workspaces');
+
+    const updateFields: any = { updatedAt: new Date() };
+    if (name !== undefined) updateFields.name = name;
+    if (description !== undefined) updateFields.description = description;
+    if (industry !== undefined) updateFields.industry = industry;
+    if (features !== undefined && typeof features === 'object') updateFields.features = features;
+
+    const result = await workspacesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Workspace not found.' });
+    }
+
+    await logWorkspaceActivity(id, req.user?.id, 'Updated workspace settings');
+
+    res.status(200).json({ success: true, message: 'Workspace updated.' });
+  } catch (error) {
+    console.error('Update workspace error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update workspace.' });
   }
 });
 

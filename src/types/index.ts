@@ -40,6 +40,8 @@ export interface IWorkspace {
   slug: string;
   description?: string;
   logo?: string;
+  industry?: string;
+  features?: Record<string, boolean>;
   ownerId: ObjectId | string;
   members: IWorkspaceMember[];
   createdAt: Date;

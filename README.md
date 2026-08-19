@@ -1,74 +1,143 @@
-# TaskFlow Pro — Server
+# TaskFlow Pro — Backend API Server
 
-REST API for TaskFlow Pro, built with **Express 5**, the **native MongoDB driver**, and **TypeScript** (CommonJS). Runs locally on port 5000 and on Vercel as a serverless function.
+<div align="center">
 
-<details>
-<summary>Project-wide docs</summary>
+**High-Performance REST API for TaskFlow Pro built with Express 5, Native MongoDB Driver, and TypeScript.**
 
-This API powers the Next.js client in a separate repository. Read the [root README](../README.md) for the full architecture, roles/access model, and deployment guide.
-</details>
+[![Express.js](https://img.shields.io/badge/Express.js-5.0-000000?style=for-the-badge&logo=express)](https://expressjs.com/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-Native_Driver-47A248?style=for-the-badge&logo=mongodb)](https://www.mongodb.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+[![JWT](https://img.shields.io/badge/JWT-Authorization-black?style=for-the-badge&logo=json-web-tokens)](https://jwt.io/)
 
-## Getting Started
+[Quick Start](#getting-started) • [Architecture](#architecture) • [API Routes](#api-routes) • [RBAC Middleware](#authorization--rbac-middleware) • [Deployment](#deployment)
 
+</div>
+
+---
+
+## 📌 Overview
+
+The **TaskFlow Pro Backend API** provides a REST service powering Kanban board manipulation, sprint scheduling, team collaboration, live notifications, workload analytics, and security policies. It is designed to run both as a long-lived Node.js server and as a Vercel serverless function (`api/index.ts`).
+
+### Key Highlights
+* **Zero-ORM Native MongoDB Driver**: Optimized connection pooling and raw aggregation pipelines for analytics without ORM overhead.
+* **Live Status Verification**: Real-time account status checks on every request via `verifyToken` middleware.
+* **Hierarchical RBAC**: Granular role-level authorization middleware (`requireWorkspaceAccess`, `requireProjectAccess`, `requireTaskAccess`, etc.).
+* **Cascade Operations**: Clean project deletions cascading through boards, tasks, comments, and activity logs.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+* **Node.js** `>= 18.0.0`
+* **MongoDB Atlas** database connection string (or local MongoDB)
+
+### 1. Installation
 ```bash
+# Navigate to server directory
+cd project-management-server
+
+# Install dependencies
 npm install
-npm run dev        # tsx watch src/index.ts → http://localhost:5000
 ```
 
-Create `.env`:
+### 2. Configure Environment Variables
+Create `.env` in `project-management-server/`:
 
 ```env
 PORT=5000
-MONGODB_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/
+MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/
 DB_NAME=taskflow_pro
-CLIENT_URL=http://localhost:3000        # CORS whitelist
-JWT_SECRET=change-me-to-a-long-random-string
-GOOGLE_CLIENT_ID=                       # optional — Google sign-in
+CLIENT_URL=http://localhost:3000
+JWT_SECRET=your_super_secret_jwt_key_min_32_chars
+GOOGLE_CLIENT_ID=your_google_oauth_client_id.apps.googleusercontent.com # Optional
 ```
 
-Verify the API is up: `GET /health`.
+### 3. Run Development Server
+```bash
+npm run dev
+# Server running on http://localhost:5000 (Health Check: GET /health)
+```
 
-## Scripts
+---
 
-| Script | Description |
-| --- | --- |
-| `npm run dev` | Watch mode via `tsx` (port 5000) |
-| `npm run build` | `tsc` → `dist/` |
-| `npm run start` | `node dist/index.js` |
+## 🛠 Available Scripts
 
-> `npm test` is a stub that exits 1 — no tests exist in this repo.
+| Script | Command | Purpose |
+| :--- | :--- | :--- |
+| **Development** | `npm run dev` | Starts server with `tsx watch` for auto-reloading |
+| **Build** | `npm run build` | Compiles TypeScript into CommonJS `dist/` |
+| **Start** | `npm run start` | Runs compiled production server `node dist/index.js` |
 
-## Architecture
+---
 
-- **Database**: raw `mongodb` driver (no ORM). Access the DB through the `connectDB()` / `getDB()` singleton in `src/config/db.ts`.
-- **Entry points**: `src/index.ts` starts a long-lived listener for local dev / VPS / Render / Railway. On **Vercel**, the app is served through the serverless handler in `api/index.ts` (zero-config `api/` detection + `vercel.json` rewrites).
-- **Response envelope**: every endpoint responds with `{ success, message, ...data }`.
+## 🏛 Architecture & Code Structure
 
-### Routes (mounted under `/api` in `src/app.ts`)
+```
+src/
+├── app.ts                  # Express application configuration & route mounting
+├── index.ts                # Standalone Node.js listener (Port 5000)
+│
+├── config/
+│   └── db.ts               # MongoDB MongoClient connection singleton
+│
+├── middleware/
+│   ├── auth.middleware.ts  # verifyToken JWT authentication & account status check
+│   └── authz.middleware.ts # 5-tier RBAC authorization middleware factories
+│
+├── routes/                 # Express route controllers
+│   ├── auth.routes.ts      # Authentication, user management, profile updates
+│   ├── workspace.routes.ts # Workspaces, member invites, member roles
+│   ├── project.routes.ts   # Project lifecycle, boards, duplication
+│   ├── task.routes.ts      # Tasks, moves, checklists, comments, attachments
+│   ├── sprint.routes.ts    # Sprint creation, activation, completion
+│   ├── analytics.routes.ts # Velocity, workload capacity, KPIs (MongoDB aggregation)
+│   ├── notification.routes.ts # Notification feeds and read receipts
+│   └── search.routes.ts    # Multi-collection global search
+│
+├── lib/
+│   ├── notify.ts           # Async notification dispatcher helper
+│   └── activity.ts         # Audit log creation helper
+│
+└── types/
+    └── index.ts            # Definitive domain entity interfaces & schemas
+```
 
-| Mount | Purpose |
-| --- | --- |
-| `/api/auth` | Register, login, Google OAuth, current user, user status (admin) |
-| `/api/workspaces` | Workspaces, members, invitations |
-| `/api/projects` | Projects, boards, project members, duplicate/delete |
-| `/api/tasks` | Tasks, move/reorder, comments, activity |
-| `/api/sprints` | Sprints — create, start, complete |
-| `/api/analytics` | Dashboard stats & reports |
-| `/api/notifications` | User notifications |
-| `/api/search` | Global search |
+---
 
-Collections: `users`, `workspaces`, `projects`, `boards`, `tasks`, `sprints`, `comments`, `notifications`, `labels`, `activity_logs`, `invitations`.
+## 📡 API Routes
 
-### Auth & Authorization
+All endpoints are mounted under `/api` and respond with `{ success, message, ...data }`:
 
-- **Protected routes require `verifyToken`** (`src/middleware/auth.middleware.ts`), which reads `Authorization: Bearer <JWT>` and re-reads the user’s DB record on every request — a role/status change takes effect without re-login. Suspended accounts get `403`.
-- **Role gates** live in `src/middleware/authz.middleware.ts` (`requireWorkspaceAccess`, `requireProjectAccess`, `requireTaskAccess`, `requireSprintAccess`, `requireGlobalRole`, …) and attach `req.workspace` / `req.project` / `req.task` / `req.sprint` for downstream use. See the [root README](../README.md#roles--access-control) for the capability floors.
-- The first user in an empty DB becomes **Administrator**; everyone else registers as **Team Member**. Workspace invites only accept `Project Manager`, `Team Member`, and `Guest User`.
+| Route Prefix | Resource Scope | Key Capabilities |
+| :--- | :--- | :--- |
+| `/api/auth` | Authentication & Users | Register, login, Google sign-in, profile updates, account suspension |
+| `/api/workspaces` | Workspaces & Teams | Workspaces CRUD, member invitations, role updates, audit logs |
+| `/api/projects` | Projects & Boards | Project CRUD, board initialization, project cloning |
+| `/api/tasks` | Tasks & Collaboration | Task CRUD, column movement, checklists, comments, attachments |
+| `/api/sprints` | Sprint Cycles | Sprint planning, activation, burndown, velocity |
+| `/api/analytics` | Analytics & Reports | Workload capacity, sprint velocity, completion rate, cycle time |
+| `/api/notifications` | User Notifications | Notification inbox, unread counts, mark-as-read, archive |
+| `/api/search` | Search | Multi-entity global search across tasks, projects, and members |
 
-## Sample / Test Data
+---
 
-`scripts/sample-projects.json` and `scripts/sample-boards.json` contain ten ready-made projects and boards (Extended JSON) you can import into MongoDB Compass to test the app. Replace the `REPLACE_WITH_YOUR_*` ObjectIds with your workspace and user IDs.
+## 🔒 Authorization & RBAC Middleware
 
-## Verification
+Endpoints are protected by hierarchical middleware factories that resolve effective user permissions:
 
-- Build: `npm run build` (`tsc` to `dist/`). No linter configured.
+* `requireWorkspaceAccess({ min: LEVEL })`
+* `requireProjectAccess({ min: LEVEL })`
+* `requireTaskAccess({ min: LEVEL })`
+* `requireSprintAccess({ min: LEVEL })`
+* `requireGlobalRole(roleName)`
+
+---
+
+## 🚢 Deployment
+
+### Deploying to Vercel
+1. Set up a new project on **Vercel** pointing to `project-management-server/`.
+2. Configure Environment Variables: `MONGODB_URI`, `DB_NAME`, `CLIENT_URL`, `JWT_SECRET`, `GOOGLE_CLIENT_ID`.
+3. Vercel automatically routes requests through `api/index.ts` using the provided `vercel.json` rewrite rules.

@@ -36,14 +36,15 @@ The **TaskFlow Pro Backend API** provides a REST service powering Kanban board m
 ### 1. Installation
 ```bash
 # Navigate to server directory
-cd project-management-server
+git clone https://github.com/cseanwar/taskflow-pro-server.git
+cd taskflow-pro-server
 
 # Install dependencies
 npm install
 ```
 
 ### 2. Configure Environment Variables
-Create `.env` in `project-management-server/`:
+Create `.env` in `taskflow-pro-server/`:
 
 ```env
 PORT=5000
